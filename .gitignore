@@ -1,0 +1,8 @@
+node_modules/
+dist/
+dist-electron/
+release/
+*.tsbuildinfo
+vite.config.d.ts
+vite.config.js
+.DS_Store

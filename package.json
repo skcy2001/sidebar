@@ -1,0 +1,74 @@
+{
+  "name": "sidebar",
+  "version": "0.1.0",
+  "description": "Edge-style sidebar browser",
+  "main": "dist-electron/electron/main.js",
+  "scripts": {
+    "postinstall": "node scripts/ensure-rollup-win-native.mjs",
+    "dev": "vite",
+    "clean": "node scripts/clean.mjs",
+    "build": "npm run clean && tsc -p tsconfig.node.json && vite build && tsc -p tsconfig.electron.json",
+    "start": "node scripts/run-electron.mjs .",
+    "preview": "vite preview",
+    "dev:electron": "tsc -p tsconfig.electron.json && node scripts/run-electron.mjs .",
+    "dev:full": "tsc -p tsconfig.electron.json && node scripts/dev-full.mjs",
+    "icon": "node scripts/generate-icon.mjs",
+    "dist": "npm run build && electron-builder --win --arm64",
+    "dist:x64": "npm run build && electron-builder --win --x64"
+  },
+  "keywords": [],
+  "author": "samya",
+  "license": "MIT",
+  "engines": {
+    "node": ">=20.0.0 <27.0.0"
+  },
+  "devDependencies": {
+    "@types/react": "^18.3.3",
+    "@types/react-dom": "^18.3.0",
+    "@vitejs/plugin-react": "^4.3.1",
+    "electron": "^31.3.1",
+    "electron-builder": "^24.13.3",
+    "typescript": "^5.5.3",
+    "vite": "^5.3.4"
+  },
+  "dependencies": {
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "optionalDependencies": {
+    "@rollup/rollup-win32-arm64-msvc": "4.60.3",
+    "@rollup/rollup-win32-x64-msvc": "4.60.3"
+  },
+  "build": {
+    "appId": "com.samya.sidebar",
+    "productName": "Sidebar",
+    "directories": {
+      "output": "release",
+      "buildResources": "build"
+    },
+    "files": [
+      "dist/**",
+      "dist-electron/**",
+      "package.json",
+      "!node_modules/**"
+    ],
+    "win": {
+      "icon": "build/icon.png",
+      "target": [
+        "nsis",
+        "portable"
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "perMachine": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "Sidebar"
+    },
+    "portable": {
+      "artifactName": "Sidebar-${version}-portable-${arch}.exe"
+    }
+  }
+}
