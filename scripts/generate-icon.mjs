@@ -1,6 +1,7 @@
 /**
- * Renders build/icon.png (256x256) — the source image electron-builder converts
- * into the Windows .ico. Regenerate with `npm run icon` after changing the theme.
+ * Renders build/icon.png — the source image electron-builder converts into the
+ * Windows .ico and the macOS .icns. Regenerate with `npm run icon` after changing
+ * the theme. macOS icns generation requires at least 512x512.
  *
  * Hand-rolled PNG encoding so the repo needs no image dependency.
  */
@@ -9,7 +10,9 @@ import { mkdirSync, writeFileSync } from 'node:fs'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
-const SIZE = 256
+const SIZE = 1024
+// Geometry below is authored in 256-unit design space; S maps it onto SIZE.
+const S = SIZE / 256
 // Matches the palette in src/index.css.
 const BG = [0x1a, 0x12, 0x10]
 const PANE = [0x24, 0x1a, 0x16]
@@ -26,9 +29,12 @@ function roundedRectSdf(x, y, cx, cy, halfW, halfH, radius) {
   return outside + Math.min(Math.max(dx, dy), 0) - radius
 }
 
-/** Antialiased coverage from an SDF: 1 well inside, 0 well outside. */
+/**
+ * Antialiased coverage from an SDF given in design units: 1 well inside, 0 well
+ * outside. Scaling to pixels here keeps the soft edge one pixel wide at any SIZE.
+ */
 function coverage(sdf) {
-  return Math.min(1, Math.max(0, 0.5 - sdf))
+  return Math.min(1, Math.max(0, 0.5 - sdf * S))
 }
 
 function over(dst, src, alpha) {
@@ -45,8 +51,8 @@ let p = 0
 for (let y = 0; y < SIZE; y++) {
   raw[p++] = 0 // filter: none
   for (let x = 0; x < SIZE; x++) {
-    const px = x + 0.5
-    const py = y + 0.5
+    const px = (x + 0.5) / S
+    const py = (y + 0.5) / S
 
     // App body: rounded square filling most of the canvas.
     const bodyAlpha = coverage(roundedRectSdf(px, py, 128, 128, 116, 116, 34))

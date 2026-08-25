@@ -23,10 +23,22 @@ npm run build
 npm start
 ```
 
+## Package installers
+
+```bash
+npm run dist        # Windows, arm64
+npm run dist:x64    # Windows, x64
+npm run dist:mac    # macOS, arm64 + x64 (.dmg and .zip)
+```
+
+Artifacts land in `release/`. Each platform must be built on itself — electron-builder
+cannot produce macOS bundles from Windows, or vice versa.
+
 ## Shortcuts
 
 - `Ctrl+T`: open a new tab and focus the address bar
 - `Ctrl+Shift+E`: collapse or expand the sidebar
+- `F11`: fullscreen the active tab (`F11` or `Esc` to leave)
 
 ## Project layout
 

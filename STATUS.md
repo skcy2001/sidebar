@@ -48,4 +48,4 @@ npm start            # launch from dist
 - [ ] No bookmarks or history UI
 - [ ] No multi-window / detach tab support
 - [ ] Favicon images load from tab URL — may fail on restrictive CSPs
-- [ ] Electron Builder packaging not yet configured
+- [x] Electron Builder packaging configured for Windows (nsis + portable) and macOS (dmg + zip)

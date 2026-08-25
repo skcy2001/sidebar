@@ -48,6 +48,18 @@ const DOWNLOADS_WINDOW_HEIGHT = 380
 const DOWNLOADS_REOPEN_GRACE_MS = 250
 let downloadsHiddenAtMs = 0
 
+// Fullscreen presents the active tab by growing the pane window to cover the
+// display, rather than reparenting the WebContentsView into a separate window —
+// moving a view mid-fullscreen makes Chromium drop out of fullscreen.
+let tabsRef: TabManager | null = null
+let syncLayoutRef: (() => void) | null = null
+let fullscreenTabId: number | null = null
+let fullscreenFromHtml = false
+
+function isFullscreenActive() {
+  return fullscreenTabId !== null
+}
+
 app.commandLine.appendSwitch('disable-background-timer-throttling')
 app.commandLine.appendSwitch('disable-renderer-backgrounding')
 app.commandLine.appendSwitch('disable-features', 'CalculateNativeWinOcclusion')
@@ -106,6 +118,7 @@ function startAutoHideLoop() {
   if (autoHideTimer) return
   autoHideTimer = setInterval(() => {
     if (shellHidden) return
+    if (isFullscreenActive()) return
     if (shellPinned) return
     if (isDraggingPlacement) return
     if (isContextMenuOpen()) return
@@ -336,6 +349,22 @@ function usesPrimaryModifier(input: Electron.Input) {
 function handleShortcutInput(event: Electron.Event, input: Electron.Input) {
   if (input.type !== 'keyDown') return
   if (input.isAutoRepeat || input.isComposing) return
+
+  // Unmodified keys, checked before the primary-modifier gate below.
+  if (input.key === 'F11' && !input.control && !input.meta && !input.alt && !input.shift) {
+    event.preventDefault()
+    toggleFullscreenFromShortcut()
+    return
+  }
+
+  // Only intercept Escape for our own fullscreen. When the page drove it,
+  // Chromium handles Escape itself and emits leave-html-full-screen.
+  if (input.key === 'Escape' && isFullscreenActive() && !fullscreenFromHtml) {
+    event.preventDefault()
+    exitFullscreen()
+    return
+  }
+
   if (!usesPrimaryModifier(input) || input.alt) return
 
   const key = input.key.toLowerCase()
@@ -422,7 +451,13 @@ function createShell() {
     if (isShellCollapsed()) dispatchTabAction({ type: 'toggleCollapsed' })
     showShell()
   })
+  tabManager.setHtmlFullscreenHandler((tabId, entering) => {
+    if (entering) enterFullscreen(tabId, true)
+    else exitFullscreen()
+  })
   const { syncLayout } = registerIpc(ribbonWin, paneWin, tabManager, downloadManager)
+  tabsRef = tabManager
+  syncLayoutRef = syncLayout
 
   setCurrentSide(persisted.side)
   shellPinned = persisted.pinned
@@ -498,6 +533,57 @@ function updateEdgePeekBounds() {
   const width = 2
   const x = persisted.side === 'left' ? wa.x : wa.x + wa.width - width
   edgePeekWindow.setBounds({ x, y: wa.y, width, height: wa.height })
+}
+
+function enterFullscreen(tabId: number, fromHtml: boolean) {
+  if (isFullscreenActive()) return
+  if (!paneWindow || paneWindow.isDestroyed() || !tabsRef) return
+
+  // A background tab (e.g. audio playing elsewhere) must come forward first.
+  if (tabsRef.getActiveTabId() !== tabId) dispatchTabAction({ type: 'activate', id: tabId })
+
+  fullscreenTabId = tabId
+  fullscreenFromHtml = fromHtml
+
+  hidePlayerNow()
+  if (ribbonWindow && !ribbonWindow.isDestroyed()) ribbonWindow.hide()
+  if (edgePeekWindow && !edgePeekWindow.isDestroyed()) edgePeekWindow.hide()
+
+  const bounds = paneWindow.getBounds()
+  const display = screen.getDisplayNearestPoint({
+    x: Math.floor(bounds.x + bounds.width / 2),
+    y: Math.floor(bounds.y + bounds.height / 2),
+  })
+
+  // Borderless-fullscreen via bounds: setFullScreen is unreliable on a window
+  // created non-resizable, and display.bounds covers the taskbar as well.
+  paneWindow.setResizable(true)
+  paneWindow.setBounds(display.bounds)
+  if (!paneWindow.isVisible()) paneWindow.show()
+  tabsRef.setFullscreen(true)
+  paneWindow.focus()
+}
+
+function exitFullscreen() {
+  if (!isFullscreenActive()) return
+  fullscreenTabId = null
+  fullscreenFromHtml = false
+
+  if (tabsRef) tabsRef.setFullscreen(false)
+  if (paneWindow && !paneWindow.isDestroyed()) paneWindow.setResizable(false)
+  if (ribbonWindow && !ribbonWindow.isDestroyed()) ribbonWindow.show()
+  // Restores the pane to the side/width/collapsed state it had before.
+  syncLayoutRef?.()
+  showShell()
+}
+
+function toggleFullscreenFromShortcut() {
+  if (isFullscreenActive()) {
+    exitFullscreen()
+    return
+  }
+  const activeId = tabsRef?.getActiveTabId()
+  if (activeId != null) enterFullscreen(activeId, false)
 }
 
 function ensureDownloadsWindow() {
@@ -600,7 +686,11 @@ app.whenReady().then(() => {
       callback: () => setContextMenuOpen(false),
     })
   })
-  ipcMain.on('shell:show', () => showShell())
+  ipcMain.on('shell:show', () => {
+    if (isFullscreenActive()) return
+    showShell()
+  })
+  ipcMain.on('shell:toggleFullscreen', () => toggleFullscreenFromShortcut())
   ipcMain.on('downloads:togglePanel', (_e, screenX: number, screenY: number) => {
     const x = Number(screenX)
     const y = Number(screenY)

@@ -19,6 +19,8 @@ export type BeforeInputHandler = (event: Electron.Event, input: Electron.Input) 
 export type NewTabRequestHandler = (url: string, background: boolean) => void
 /** Called for every session the manager uses, so downloads can be watched per-partition. */
 export type SessionHook = (ses: Electron.Session) => void
+/** Called when a page enters or leaves HTML5 fullscreen (e.g. a video player). */
+export type HtmlFullscreenHandler = (tabId: number, entering: boolean) => void
 
 interface Tab {
   id: number
@@ -108,6 +110,8 @@ export class TabManager {
   private beforeInputHandler: BeforeInputHandler | null = null
   private newTabRequestHandler: NewTabRequestHandler | null = null
   private sessionHook: SessionHook | null = null
+  private fullscreen = false
+  private htmlFullscreenHandler: HtmlFullscreenHandler | null = null
 
   constructor(win: BrowserWindow) {
     this.win = win
@@ -124,6 +128,8 @@ export class TabManager {
 
   private viewBounds() {
     const [winW, winH] = this.win.getContentSize()
+    // Fullscreen hands the whole window to the page: no toolbar, no resize strip.
+    if (this.fullscreen) return { x: 0, y: 0, width: winW, height: winH }
     // Leave room for the pane outer-edge resize handle so the WebContentsView
     // never covers the draggable strip.
     const resizeW = this.collapsed ? 0 : INNER_RESIZE_HANDLE_WIDTH
@@ -134,6 +140,12 @@ export class TabManager {
       width: winW - resizeW,
       height: winH - TOOLBAR_HEIGHT,
     }
+  }
+
+  /** Bounds the active view should occupy right now, honouring fullscreen first. */
+  private currentViewBounds() {
+    if (this.fullscreen) return this.viewBounds()
+    return this.collapsed ? this.hiddenViewBounds() : this.viewBounds()
   }
 
   private hiddenViewBounds() {
@@ -221,6 +233,32 @@ export class TabManager {
 
   setNewTabRequestHandler(handler: NewTabRequestHandler) {
     this.newTabRequestHandler = handler
+  }
+
+  setHtmlFullscreenHandler(handler: HtmlFullscreenHandler) {
+    this.htmlFullscreenHandler = handler
+  }
+
+  getActiveTabId(): number | null {
+    return this.activeId
+  }
+
+  isFullscreen() {
+    return this.fullscreen
+  }
+
+  /**
+   * Hands the whole pane window to the page. The caller is responsible for
+   * resizing that window to cover the display; this only controls view layout.
+   */
+  setFullscreen(fullscreen: boolean) {
+    if (this.fullscreen === fullscreen) return
+    this.fullscreen = fullscreen
+    const active = this.activeTab()
+    if (!active) return
+    // Re-attach in case we were collapsed, where the view is parked off-window.
+    try { this.win.contentView.addChildView(active.view) } catch {}
+    active.view.setBounds(this.currentViewBounds())
   }
 
   /**
@@ -337,6 +375,10 @@ export class TabManager {
     wc.on('media-started-playing', () => setAudioPlaying(true))
     wc.on('media-paused', () => setAudioPlaying(false))
     wc.on('destroyed', () => setAudioPlaying(false))
+
+    // A video player's fullscreen button: present the whole pane window fullscreen.
+    wc.on('enter-html-full-screen', () => this.htmlFullscreenHandler?.(id, true))
+    wc.on('leave-html-full-screen', () => this.htmlFullscreenHandler?.(id, false))
 
     wc.on('page-favicon-updated', (_e, favicons) => {
       if (favicons.length === 0) return
@@ -635,7 +677,7 @@ export class TabManager {
     this.activeId = id
 
     this.win.contentView.addChildView(tab.view)
-    tab.view.setBounds(this.collapsed ? this.hiddenViewBounds() : this.viewBounds())
+    tab.view.setBounds(this.currentViewBounds())
 
     this.emit()
   }
@@ -643,6 +685,10 @@ export class TabManager {
   closeTab(id: number) {
     const idx = this.tabs.findIndex(t => t.id === id)
     if (idx === -1) return
+
+    // Closing the tab that is presenting fullscreen must restore the shell,
+    // otherwise the ribbon stays hidden with nothing on screen to bring it back.
+    if (this.fullscreen && this.activeId === id) this.htmlFullscreenHandler?.(id, false)
 
     const tab = this.tabs[idx]
     try { this.win.contentView.removeChildView(tab.view) } catch {}
@@ -715,13 +761,13 @@ export class TabManager {
     if (!active) return
 
     try { this.win.contentView.addChildView(active.view) } catch {}
-    active.view.setBounds(collapsed ? this.hiddenViewBounds() : this.viewBounds())
+    active.view.setBounds(this.currentViewBounds())
   }
 
   relayout() {
     const active = this.activeTab()
     if (!active) return
-    active.view.setBounds(this.collapsed ? this.hiddenViewBounds() : this.viewBounds())
+    active.view.setBounds(this.currentViewBounds())
   }
 
   private activeTab(): Tab | undefined {

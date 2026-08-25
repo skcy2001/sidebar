@@ -8,6 +8,8 @@ export interface SidebarApi {
     setDragging: (dragging: boolean) => void
     showContextMenu: (clientX: number, clientY: number) => void
     showShell: () => void
+    /** Fullscreens the active tab, or leaves fullscreen if already in it. */
+    toggleFullscreen: () => void
     showPlayer: (
       tabId: number,
       screenX: number,

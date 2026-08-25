@@ -657,18 +657,30 @@
 
 /* ---- Downloads ---- */
 
-/* Pinned to the toolbar's right edge so it stays visible while
+/* Pinned to the toolbar's right edge so these stay visible while
    .toolbar-controls is faded out. */
-.toolbar-btn.downloads-btn {
+.toolbar-corner {
   position: absolute;
   right: 6px;
   top: 50%;
   transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  gap: 2px;
   z-index: 2;
 }
 
-.toolbar.has-downloads .toolbar-controls {
+/* Keep the URL bar from running underneath the corner cluster. */
+.toolbar-controls {
   padding-right: 30px;
+}
+
+.toolbar.has-downloads .toolbar-controls {
+  padding-right: 60px;
+}
+
+.toolbar-btn.downloads-btn {
+  position: relative;
 }
 
 .toolbar-btn.downloads-btn.active {

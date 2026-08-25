@@ -176,32 +176,48 @@ export function Toolbar({
           </div>
 
           {/* Outside .toolbar-controls: that container is hidden until hover, and
-              an in-flight download needs to stay visible. */}
-          {downloads.length > 0 && (
+              these need to stay visible. */}
+          <div className="toolbar-corner">
+            {downloads.length > 0 && (
+              <button
+                className={`toolbar-btn downloads-btn ${activeDownloads.length > 0 ? 'active' : ''}`}
+                onClick={openDownloads}
+                title={
+                  activeDownloads.length > 0
+                    ? `${activeDownloads.length} downloading`
+                    : 'Downloads'
+                }
+                aria-label="Downloads"
+              >
+                <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
+                  <path d="M8 2v8" />
+                  <path d="M4.5 7 8 10.5 11.5 7" />
+                  <path d="M2.5 13h11" />
+                </svg>
+                {downloadProgress !== null && (
+                  <span
+                    className="downloads-progress"
+                    style={{ '--p': `${Math.round(downloadProgress * 100)}%` } as React.CSSProperties}
+                    aria-hidden="true"
+                  />
+                )}
+              </button>
+            )}
+
             <button
-              className={`toolbar-btn downloads-btn ${activeDownloads.length > 0 ? 'active' : ''}`}
-              onClick={openDownloads}
-              title={
-                activeDownloads.length > 0
-                  ? `${activeDownloads.length} downloading`
-                  : 'Downloads'
-              }
-              aria-label="Downloads"
+              className="toolbar-btn fullscreen-btn"
+              onClick={() => window.sidebarApi?.shell.toggleFullscreen()}
+              title="Fullscreen (F11)"
+              aria-label="Enter fullscreen"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M8 2v8" />
-                <path d="M4.5 7 8 10.5 11.5 7" />
-                <path d="M2.5 13h11" />
+                <path d="M6 2H2v4" />
+                <path d="M10 2h4v4" />
+                <path d="M6 14H2v-4" />
+                <path d="M10 14h4v-4" />
               </svg>
-              {downloadProgress !== null && (
-                <span
-                  className="downloads-progress"
-                  style={{ '--p': `${Math.round(downloadProgress * 100)}%` } as React.CSSProperties}
-                  aria-hidden="true"
-                />
-              )}
             </button>
-          )}
+          </div>
         </>
       )}
     </div>

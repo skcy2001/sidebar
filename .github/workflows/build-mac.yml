@@ -1,0 +1,38 @@
+name: Build macOS
+
+# Builds the unsigned macOS app. Runs on demand, and on any v* tag.
+# macOS is the only platform where electron-builder can produce a .dmg, so this
+# exists to avoid needing a Mac locally.
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: macos-14 # Apple Silicon runner
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - run: npm ci
+
+      - name: Build and package
+        # CSC_IDENTITY_AUTO_DISCOVERY=false stops electron-builder from trying to
+        # sign with whatever certificate it finds; these are unsigned builds.
+        run: npm run dist:mac
+        env:
+          CSC_IDENTITY_AUTO_DISCOVERY: false
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: sidebar-macos
+          path: |
+            release/*.dmg
+            release/*.zip
+          if-no-files-found: error

@@ -10,6 +10,7 @@ const api: SidebarApi = {
     showContextMenu: (clientX: number, clientY: number) =>
       ipcRenderer.send('shell:contextMenu', clientX, clientY),
     showShell: () => ipcRenderer.send('shell:show'),
+    toggleFullscreen: () => ipcRenderer.send('shell:toggleFullscreen'),
     showPlayer: (
       tabId: number,
       screenX: number,
