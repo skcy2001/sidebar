@@ -108,6 +108,19 @@ export function setCurrentSide(side: Side) {
   currentSide = side
 }
 
+/**
+ * Run after the dock side or display changes, so the appbar strip can follow.
+ *
+ * Placement alone is not enough while pinned: the reservation is registered
+ * with the shell against one edge of one display, and moving the ribbon without
+ * re-registering leaves the reserved band behind at the old position.
+ */
+let onPlacementChanged: (() => void) | undefined
+
+export function setPlacementChangedHandler(handler: () => void) {
+  onPlacementChanged = handler
+}
+
 export function isShellCollapsed(): boolean {
   return shell?.tabs.isCollapsed() ?? true
 }
@@ -279,6 +292,7 @@ export function dispatchTabAction(action: TabAction) {
       currentSide = currentSide === 'left' ? 'right' : 'left'
       t.setSide(currentSide)
       syncLayout()
+      onPlacementChanged?.()
       sendToShellWindows(rw, pw, 'window:side', currentSide)
       const b = rw.getBounds()
       const disp = screen.getDisplayNearestPoint({
@@ -313,6 +327,9 @@ function commitShellPlacementAtScreenPoint(screenX: number, screenY: number) {
   }
   placeRibbonPane(ribbonWin, paneWin, currentSide, tabs.isCollapsed(), tabs.getActiveExpandedWidth(), wa)
   tabs.relayout()
+  // The ribbon may have crossed to another edge or another display, and a
+  // reservation registered against the old one has to be re-registered.
+  onPlacementChanged?.()
   if (sideChanged) {
     sendToShellWindows(ribbonWin, paneWin, 'window:side', currentSide)
   }

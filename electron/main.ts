@@ -14,10 +14,12 @@ import {
   registerIpc,
   setContextMenuOpen,
   setCurrentSide,
+  setPlacementChangedHandler,
   toggleCollapsedFromShortcut,
 } from './ipc'
 import { DEFAULT_PANE_WIDTH, DEFAULT_SIDE, RIBBON_WIDTH, type Side } from '../shared/types'
 import { placeRibbonPane } from './windowPlacement'
+import { displayNearestWindowCenter } from './windowAnchoring'
 import { isSliding, settleSlide, slideTo } from './slide'
 import { TRAY_ICON_PNGS } from './trayIconData'
 import { LAUNCH_PROTOCOL, urlFromArgv } from './urlLaunch'
@@ -74,8 +76,31 @@ let autoHideTimer: NodeJS.Timeout | null = null
  */
 let ribbonDockedX: number | null = null
 let lastCursorInsideMs = Date.now()
+/** When the cursor arrived at the docked edge, while hidden; null when it is away. */
+let edgeDwellSinceMs: number | null = null
 let isDraggingPlacement = false
 const AUTOHIDE_GRACE_MS = 450
+/** Width of the sliver left at the screen edge while the shell is hidden. */
+const EDGE_PEEK_WIDTH = 2
+/** How close to the docked edge the cursor must come to bring the shell back. */
+const EDGE_TRIGGER_PX = 2
+/**
+ * How long the cursor has to stay at the edge before the shell returns.
+ *
+ * Without a dwell, anything that merely passes the edge — throwing the pointer
+ * at a maximized window's scrollbar, crossing to the next monitor — drags the
+ * sidebar out on top of it.
+ */
+const EDGE_DWELL_MS = 200
+/**
+ * Poll period for the auto-hide loop.
+ *
+ * It also sets how precisely the dwell above can be measured: the cursor's
+ * arrival is only noticed on a tick, so a coarser poll would turn a 200ms dwell
+ * into most of half a second. The work per tick is a cursor read and a couple
+ * of rectangle tests.
+ */
+const AUTOHIDE_POLL_MS = 60
 const PLAYER_WINDOW_WIDTH = 260
 const PLAYER_WINDOW_HEIGHT = 336
 const PLAYER_WINDOW_MIN_HEIGHT = 120
@@ -152,10 +177,20 @@ function isCursorInsideShell() {
   return false
 }
 
+/** True when the cursor is in the trigger band at the shell's docked edge. */
+function isCursorAtDockEdge(): boolean {
+  if (!ribbonWindow || ribbonWindow.isDestroyed()) return false
+  const pt = screen.getCursorScreenPoint()
+  const { workArea: wa } = displayNearestWindowCenter(ribbonWindow)
+  if (pt.y < wa.y || pt.y >= wa.y + wa.height) return false
+  return getCurrentSide() === 'left'
+    ? pt.x <= wa.x + EDGE_TRIGGER_PX
+    : pt.x >= wa.x + wa.width - 1 - EDGE_TRIGGER_PX
+}
+
 function startAutoHideLoop() {
   if (autoHideTimer) return
   autoHideTimer = setInterval(() => {
-    if (shellHidden) return
     if (isFullscreenActive()) return
     if (shellPinned) return
     if (isDraggingPlacement) return
@@ -164,6 +199,21 @@ function startAutoHideLoop() {
     if (isSliding()) return
     if (isContextMenuOpen()) return
     if (!ribbonWindow || ribbonWindow.isDestroyed()) return
+
+    // While hidden, this poll is also what brings the shell back. Hovering the
+    // 2px strip was the old trigger and missed too often: it is a fragile
+    // target, and it was positioned from persisted state, so it could sit on a
+    // different display than the ribbon. The cursor itself cannot be wrong.
+    if (shellHidden) {
+      if (!isCursorAtDockEdge()) {
+        edgeDwellSinceMs = null
+        return
+      }
+      if (edgeDwellSinceMs === null) edgeDwellSinceMs = Date.now()
+      else if (Date.now() - edgeDwellSinceMs >= EDGE_DWELL_MS) showShell()
+      return
+    }
+
     if (!ribbonWindow.isVisible()) return
     if (!isShellCollapsed()) return
 
@@ -177,7 +227,7 @@ function startAutoHideLoop() {
     if (elapsed >= AUTOHIDE_GRACE_MS) {
       hideShell()
     }
-  }, 120)
+  }, AUTOHIDE_POLL_MS)
 }
 
 /**
@@ -196,6 +246,7 @@ function finishReveal() {
 
 function showShell() {
   shellHidden = false
+  edgeDwellSinceMs = null
   if (edgePeekWindow && !edgePeekWindow.isDestroyed()) edgePeekWindow.hide()
   lastCursorInsideMs = Date.now()
   startAutoHideLoop()
@@ -627,6 +678,9 @@ function createShell() {
   const { syncLayout } = registerIpc(ribbonWin, paneWin, tabManager, downloadManager)
   tabsRef = tabManager
   syncLayoutRef = syncLayout
+  // Moving the ribbon to another edge or display has to re-register the appbar;
+  // otherwise the reserved band stays behind where the ribbon used to be.
+  setPlacementChangedHandler(syncEdgeReservation)
 
   setCurrentSide(persisted.side)
   shellPinned = persisted.pinned
@@ -682,7 +736,7 @@ function createShell() {
 function ensureEdgePeekWindow() {
   if (edgePeekWindow && !edgePeekWindow.isDestroyed()) return edgePeekWindow
   const win = new BrowserWindow({
-    width: 2,
+    width: EDGE_PEEK_WIDTH,
     height: 200,
     frame: false,
     roundedCorners: false,
@@ -697,6 +751,13 @@ function ensureEdgePeekWindow() {
     webPreferences: shellWebPreferences(),
   })
   flattenWindowChrome(win)
+  // Takes no input. Windows refuses to make a window as narrow as the strip we
+  // ask for — it comes back about 64px wide — and the region that squares the
+  // other windows does not apply to a transparent one. Docked right the surplus
+  // hangs off the screen, but docked left it lies across the desktop as an
+  // invisible band that swallows every click in it. Nothing needs to hover it
+  // now that the auto-hide loop watches the cursor instead.
+  win.setIgnoreMouseEvents(true)
   loadRenderer(win, 'edge')
   win.on('closed', () => {
     if (edgePeekWindow === win) edgePeekWindow = null
@@ -707,15 +768,14 @@ function ensureEdgePeekWindow() {
 
 function updateEdgePeekBounds() {
   if (!edgePeekWindow || edgePeekWindow.isDestroyed()) return
-  const persisted = loadShellPlacementState()
-  const displays = screen.getAllDisplays()
-  const display = persisted.displayId != null
-    ? displays.find(d => d.id === persisted.displayId) ?? screen.getPrimaryDisplay()
-    : screen.getPrimaryDisplay()
-  const wa = display.workArea
-  const width = 2
-  const x = persisted.side === 'left' ? wa.x : wa.x + wa.width - width
-  edgePeekWindow.setBounds({ x, y: wa.y, width, height: wa.height })
+  // From where the ribbon actually is, not from persisted state: the two
+  // disagree whenever the ribbon has moved display without a save landing, and
+  // the strip would then mark an edge the sidebar is not on.
+  const wa = ribbonWindow && !ribbonWindow.isDestroyed()
+    ? displayNearestWindowCenter(ribbonWindow).workArea
+    : screen.getPrimaryDisplay().workArea
+  const x = getCurrentSide() === 'left' ? wa.x : wa.x + wa.width - EDGE_PEEK_WIDTH
+  edgePeekWindow.setBounds({ x, y: wa.y, width: EDGE_PEEK_WIDTH, height: wa.height })
 }
 
 function enterFullscreen(tabId: number, fromHtml: boolean) {

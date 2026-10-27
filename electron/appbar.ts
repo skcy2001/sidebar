@@ -247,8 +247,10 @@ export function squareWindowRegion(win: BrowserWindow): boolean {
 
   const region = n.CreateRectRgn(0, 0, width, height)
   if (!region) return false
-  // bRedraw false for the same reason; the window repaints on its own anyway.
-  return n.SetWindowRgn(hwndFromWindow(win), region, 0) !== 0
+  // bRedraw true: the guard above already breaks the cycle, and without a
+  // redraw a window that just grew keeps whatever was in the newly exposed
+  // strip — which shows up as a black band along its edge.
+  return n.SetWindowRgn(hwndFromWindow(win), region, 1) !== 0
 }
 
 export function disableWindowTransitions(win: BrowserWindow): boolean {

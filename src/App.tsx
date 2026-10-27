@@ -448,23 +448,16 @@ function formatBytes(bytes: number): string {
   return `${value >= 10 || i === 0 ? Math.round(value) : value.toFixed(1)} ${units[i]}`
 }
 
+/**
+ * The sliver that marks the screen edge while the shell is hidden.
+ *
+ * It handles nothing: the window is click-through, because Windows will not
+ * make it as narrow as it asks and the surplus would swallow clicks on a left
+ * dock. Bringing the shell back belongs to the main process now, which watches
+ * the cursor in its auto-hide loop rather than waiting to be hovered.
+ */
 function EdgeShell() {
-  const showShell = () => window.sidebarApi?.shell.showShell()
-
-  return (
-    <div
-      className="edge-peek-shell"
-      onPointerEnter={showShell}
-      onMouseEnter={showShell}
-      onMouseMove={showShell}
-      onClick={showShell}
-      onContextMenu={e => {
-        e.preventDefault()
-        window.sidebarApi?.shell.showContextMenu(e.clientX, e.clientY)
-      }}
-      aria-hidden="true"
-    />
-  )
+  return <div className="edge-peek-shell" aria-hidden="true" />
 }
 
 function PlayIcon() {
