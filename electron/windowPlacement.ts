@@ -2,6 +2,7 @@ import type { BrowserWindow, Rectangle } from 'electron'
 import type { Side } from '../shared/types'
 import { MAX_EXPANDED_WIDTH, MIN_EXPANDED_WIDTH, RIBBON_WIDTH } from '../shared/types'
 import { displayNearestWindowCenter } from './windowAnchoring'
+import { expandForReservation } from './appbar'
 
 export function clampPaneWidth(width: number): number {
   return Math.max(MIN_EXPANDED_WIDTH, Math.min(MAX_EXPANDED_WIDTH, Math.round(width)))
@@ -17,7 +18,9 @@ export function placeRibbonPane(
   /** When set (e.g. cursor display during drag), anchor both windows to this work area. */
   workArea?: Rectangle,
 ) {
-  const wa = workArea ?? displayNearestWindowCenter(ribbon).workArea
+  // Registering as an appbar shrinks the reported work area by our own strip;
+  // add it back so the ribbon lands inside the reservation rather than beside it.
+  const wa = expandForReservation(workArea ?? displayNearestWindowCenter(ribbon).workArea, side)
   const height = wa.height
   const y = wa.y
 

@@ -33,6 +33,7 @@
     "vite": "^5.3.4"
   },
   "dependencies": {
+    "koffi": "^3.2.1",
     "react": "^18.3.1",
     "react-dom": "^18.3.1"
   },
@@ -51,7 +52,9 @@
       "dist/**",
       "dist-electron/**",
       "package.json",
-      "!node_modules/**"
+      "!node_modules/**",
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
     ],
     "win": {
       "icon": "build/icon.png",
@@ -91,6 +94,18 @@
           ]
         }
       ]
-    }
+    },
+    "asarUnpack": [
+      "node_modules/koffi/**",
+      "node_modules/@koromix/**"
+    ],
+    "protocols": [
+      {
+        "name": "Sidebar",
+        "schemes": [
+          "sidebar"
+        ]
+      }
+    ]
   }
 }

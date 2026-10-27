@@ -10,7 +10,6 @@ const api: SidebarApi = {
     showContextMenu: (clientX: number, clientY: number) =>
       ipcRenderer.send('shell:contextMenu', clientX, clientY),
     showShell: () => ipcRenderer.send('shell:show'),
-    toggleFullscreen: () => ipcRenderer.send('shell:toggleFullscreen'),
     showPlayer: (
       tabId: number,
       screenX: number,
@@ -73,6 +72,9 @@ const api: SidebarApi = {
     toggleMute: (tabId: number) => ipcRenderer.invoke('tabs:toggleMute', tabId),
     reorderPinned: (fromSiteId: string, toSiteId: string, before?: boolean) =>
       ipcRenderer.send('tabs:reorderPinned', fromSiteId, toSiteId, before ?? true),
+    openActiveInDefaultBrowser: () => ipcRenderer.send('tabs:openInDefaultBrowser'),
+    pin: (tabId: number) => ipcRenderer.send('tabs:pin', tabId),
+    unpin: (siteId: string) => ipcRenderer.send('tabs:unpin', siteId),
   },
   downloads: {
     getState: (): Promise<DownloadInfo[]> => ipcRenderer.invoke('downloads:getState'),

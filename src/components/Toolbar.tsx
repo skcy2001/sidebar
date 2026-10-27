@@ -205,16 +205,16 @@ export function Toolbar({
             )}
 
             <button
-              className="toolbar-btn fullscreen-btn"
-              onClick={() => window.sidebarApi?.shell.toggleFullscreen()}
-              title="Fullscreen (F11)"
-              aria-label="Enter fullscreen"
+              className="toolbar-btn open-external-btn"
+              disabled={!isWebUrl(activeTab?.url)}
+              onClick={() => window.sidebarApi?.tabs.openActiveInDefaultBrowser()}
+              title="Open in default browser"
+              aria-label="Open in default browser"
             >
               <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.6" strokeLinecap="round" strokeLinejoin="round">
-                <path d="M6 2H2v4" />
-                <path d="M10 2h4v4" />
-                <path d="M6 14H2v-4" />
-                <path d="M10 14h4v-4" />
+                <path d="M9 2.5h4.5V7" />
+                <path d="M13.5 2.5 7.5 8.5" />
+                <path d="M12 9.5v3a1 1 0 0 1-1 1H3.5a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1h3" />
               </svg>
             </button>
           </div>
@@ -231,6 +231,17 @@ function overallProgress(active: DownloadInfo[]): number | null {
   if (total <= 0) return null
   const received = active.reduce((sum, d) => sum + d.receivedBytes, 0)
   return Math.min(1, received / total)
+}
+
+/** Only http(s) pages can meaningfully be handed to the OS browser. */
+function isWebUrl(url?: string): boolean {
+  if (!url) return false
+  try {
+    const protocol = new URL(url).protocol
+    return protocol === 'http:' || protocol === 'https:'
+  } catch {
+    return false
+  }
 }
 
 function displayUrl(url?: string) {

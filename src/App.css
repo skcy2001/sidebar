@@ -683,6 +683,10 @@
   position: relative;
 }
 
+.toolbar-btn.open-external-btn:disabled {
+  opacity: 0.3;
+}
+
 .toolbar-btn.downloads-btn.active {
   color: var(--accent);
 }

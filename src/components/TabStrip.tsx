@@ -143,6 +143,9 @@ export function TabStrip({
   const recentReorder = useRef(false)
   const [insertHint, setInsertHint] = useState<{ kind: DragPayload['kind']; targetId: string | number; before: boolean } | null>(null)
   const pendingDrop = useRef<{ target: DragPayload; before: boolean } | null>(null)
+  // Set while a drag has crossed the divider, turning the drop into a pin/unpin.
+  const [crossHint, setCrossHint] = useState<'pin' | 'unpin' | null>(null)
+  const pendingCross = useRef<'pin' | 'unpin' | null>(null)
 
   const handleContextMenu = (e: React.MouseEvent, tabId: number) => {
     e.preventDefault()
@@ -203,7 +206,9 @@ export function TabStrip({
     dragStart.current = { x: e.clientX, y: e.clientY, payload }
     isReorderDragging.current = false
     pendingDrop.current = null
+    pendingCross.current = null
     setInsertHint(null)
+    setCrossHint(null)
   }
 
   const onStripPointerMoveCapture = (e: React.PointerEvent) => {
@@ -216,6 +221,30 @@ export function TabStrip({
     isReorderDragging.current = true
 
     const kind = start.payload.kind
+
+    // Dragging over the far side of the divider converts the drop into a
+    // pin (tab -> pinned) or unpin (pinned -> tabs).
+    const zone = zoneAtY(e.clientY)
+    const cross: 'pin' | 'unpin' | null =
+      zone === null
+        ? null
+        : kind === 'tab' && zone === 'pinned'
+        ? 'pin'
+        : kind === 'pinned' && zone === 'tabs'
+        ? 'unpin'
+        : null
+
+    if (cross) {
+      pendingCross.current = cross
+      pendingDrop.current = null
+      setCrossHint(cross)
+      setInsertHint(null)
+      return
+    }
+
+    pendingCross.current = null
+    setCrossHint(null)
+
     const selector = kind === 'pinned' ? '.pinned-site-btn' : '.tab-item'
     const nodes = Array.from(document.querySelectorAll<HTMLElement>(selector))
     if (nodes.length === 0) return
@@ -243,6 +272,18 @@ export function TabStrip({
     }
     if (!best) return
 
+    // Dropping onto yourself, or either side adjacent to yourself, lands the item
+    // exactly where it already is. The main process discards those, so showing an
+    // insert line would promise a move that never happens.
+    const ids = nodes.map(n => parseDragTarget(n)?.id)
+    const fromIdx = ids.indexOf(start.payload.id)
+    const toIdx = ids.indexOf(best.target.id)
+    if (fromIdx !== -1 && toIdx !== -1 && resolvesToSamePosition(fromIdx, toIdx, best.before, nodes.length)) {
+      pendingDrop.current = null
+      setInsertHint(null)
+      return
+    }
+
     pendingDrop.current = best
     setInsertHint({ kind, targetId: best.target.id, before: best.before })
   }
@@ -257,8 +298,25 @@ export function TabStrip({
     const dy = e.clientY - start.y
     const moved = dx * dx + dy * dy >= REORDER_MIN_SQ
     setInsertHint(null)
+    setCrossHint(null)
     isReorderDragging.current = false
+    const cross = pendingCross.current
+    pendingCross.current = null
     if (!moved) return
+
+    if (cross) {
+      // Suppress the click that follows this pointer-up, so pinning does not
+      // also activate the icon under the cursor.
+      recentReorder.current = true
+      window.setTimeout(() => { recentReorder.current = false }, 0)
+      if (cross === 'pin' && start.payload.kind === 'tab') {
+        window.sidebarApi?.tabs.pin(start.payload.id)
+      } else if (cross === 'unpin' && start.payload.kind === 'pinned') {
+        window.sidebarApi?.tabs.unpin(start.payload.id)
+      }
+      return
+    }
+
     const drop = pendingDrop.current
     pendingDrop.current = null
     const target = drop?.target ?? parseDragTarget(document.elementFromPoint(e.clientX, e.clientY))
@@ -282,8 +340,10 @@ export function TabStrip({
     window.sidebarApi?.shell.setDragging(false)
     dragStart.current = null
     pendingDrop.current = null
+    pendingCross.current = null
     isReorderDragging.current = false
     setInsertHint(null)
+    setCrossHint(null)
   }
 
   return (
@@ -363,11 +423,18 @@ export function TabStrip({
               }
               return parts
             })}
+            {crossHint === 'pin' && (
+              <div className="reorder-placeholder" aria-hidden="true" />
+            )}
           </div>
         )}
 
         {showPinnedDivider && (
           <div className="tab-strip-pinned-divider" aria-hidden="true" />
+        )}
+
+        {crossHint === 'unpin' && (
+          <div className="reorder-placeholder" aria-hidden="true" />
         )}
 
         {unpinnedTabs.flatMap(tab => {
@@ -421,6 +488,34 @@ export function TabStrip({
       <RibbonPlacementHandle />
     </div>
   )
+}
+
+/**
+ * Whether a drop would leave the item at its current index. Mirrors the splice
+ * arithmetic in TabManager.reorderTabs, so the hint and the result agree.
+ */
+function resolvesToSamePosition(fromIdx: number, toIdx: number, before: boolean, count: number): boolean {
+  if (fromIdx === toIdx) return true
+  let targetIdx = toIdx
+  if (fromIdx < toIdx) targetIdx -= 1
+  if (!before) targetIdx += 1
+  targetIdx = Math.max(0, Math.min(count - 1, targetIdx))
+  return targetIdx === fromIdx
+}
+
+/**
+ * Which side of the pinned/unpinned divider a pointer is on. Returns null when
+ * there is no divider to cross — with nothing pinned yet there is no line, and
+ * treating the top of the strip as a pin zone would break reorder-to-first.
+ */
+function zoneAtY(clientY: number): 'pinned' | 'tabs' | null {
+  const list = document.querySelector('.pinned-site-list')
+  if (!list) return null
+  const divider = document.querySelector('.tab-strip-pinned-divider')
+  const boundary = divider
+    ? divider.getBoundingClientRect().bottom
+    : list.getBoundingClientRect().bottom
+  return clientY <= boundary ? 'pinned' : 'tabs'
 }
 
 /** Renders the unread count parsed in the main process, or a plain dot. */

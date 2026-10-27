@@ -11,6 +11,7 @@ import {
   type Side,
 } from '../../shared/types'
 import { isSizedPopup, parseUnreadFromTitle } from './parsing'
+import { isSameHost } from '../urlLaunch'
 
 export type TabStateListener = (tabs: TabInfo[]) => void
 export type PinnedSitesListener = (sites: PinnedSiteInfo[]) => void
@@ -241,6 +242,10 @@ export class TabManager {
 
   getActiveTabId(): number | null {
     return this.activeId
+  }
+
+  getActiveTabUrl(): string | null {
+    return this.activeTab()?.url ?? null
   }
 
   isFullscreen() {
@@ -509,6 +514,32 @@ export class TabManager {
     }
 
     this.createTab(site.url, site.expandedWidth ?? this.getActiveExpandedWidth(), site.id)
+  }
+
+  /** The pinned site that owns this URL's host, if any. */
+  findPinnedSiteIdForUrl(url: string): string | null {
+    return this.pinnedSites.find(site => isSameHost(site.url, url))?.id ?? null
+  }
+
+  /**
+   * Opens `url` inside a pinned site instead of a fresh tab, reusing that
+   * site's existing tab so the ribbon never grows a duplicate icon for a site
+   * it already hosts.
+   */
+  openInPinnedSite(siteId: string, url: string): boolean {
+    const site = this.pinnedSites.find(s => s.id === siteId)
+    if (!site) return false
+
+    const existing = this.tabs.find(t => t.pinnedSiteId === siteId)
+    if (existing) {
+      this.activateTab(existing.id)
+      // navigate() acts on the active tab, which the line above just made this one.
+      if (existing.url !== url) this.navigate(url)
+      return true
+    }
+
+    this.createTab(url, site.expandedWidth ?? this.getActiveExpandedWidth(), siteId)
+    return true
   }
 
   getOpenTabIdForPinnedSite(siteId: string): number | null {

@@ -8,8 +8,6 @@ export interface SidebarApi {
     setDragging: (dragging: boolean) => void
     showContextMenu: (clientX: number, clientY: number) => void
     showShell: () => void
-    /** Fullscreens the active tab, or leaves fullscreen if already in it. */
-    toggleFullscreen: () => void
     showPlayer: (
       tabId: number,
       screenX: number,
@@ -47,6 +45,12 @@ export interface SidebarApi {
     nextTrack: (tabId: number) => Promise<boolean>
     toggleMute: (tabId: number) => Promise<boolean>
     reorderPinned: (fromSiteId: string, toSiteId: string, before?: boolean) => void
+    /** Hands the active tab's URL to the OS browser (http/https only). */
+    openActiveInDefaultBrowser: () => void
+    /** Pins an open tab to the ribbon. */
+    pin: (tabId: number) => void
+    /** Removes a pinned site, returning its tab to the unpinned list. */
+    unpin: (siteId: string) => void
   }
   downloads: {
     getState: () => Promise<DownloadInfo[]>

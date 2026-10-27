@@ -10,16 +10,40 @@ import {
   isContextMenuOpen,
   isShellCollapsed,
   openUrlInNewTab,
+  openUrlPreferPinned,
   registerIpc,
   setContextMenuOpen,
   setCurrentSide,
   toggleCollapsedFromShortcut,
 } from './ipc'
-import { DEFAULT_PANE_WIDTH, DEFAULT_SIDE, RIBBON_WIDTH } from '../shared/types'
+import { DEFAULT_PANE_WIDTH, DEFAULT_SIDE, RIBBON_WIDTH, type Side } from '../shared/types'
 import { placeRibbonPane } from './windowPlacement'
+import { isSliding, settleSlide, slideTo } from './slide'
+import { TRAY_ICON_PNGS } from './trayIconData'
+import { LAUNCH_PROTOCOL, urlFromArgv } from './urlLaunch'
 import { loadShellPlacementState, saveShellPlacementState } from './shellState'
+import {
+  APPBAR_CALLBACK_MESSAGE,
+  disableWindowShadow,
+  handleCallback as handleAppBarCallback,
+  disableWindowTransitions,
+  releaseEdge,
+  reserveEdge,
+  squareWindowRegion,
+} from './appbar'
 
 const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged
+
+// Only one sidebar may run: a second copy would fight over the screen edge,
+// the tray, and the shared state files. Later launches hand their URL over.
+const isPrimaryInstance = app.requestSingleInstanceLock()
+if (!isPrimaryInstance) app.quit()
+
+app.on('second-instance', (_event, argv) => {
+  const url = urlFromArgv(argv)
+  if (url) openLaunchUrl(url)
+  else showShell()
+})
 
 let ribbonWindow: BrowserWindow | null = null
 let paneWindow: BrowserWindow | null = null
@@ -35,6 +59,12 @@ let isQuitting = false
 let shellHidden = false
 let shellPinned = loadShellPlacementState().pinned
 let autoHideTimer: NodeJS.Timeout | null = null
+/**
+ * The ribbon's docked x while a slide owns the window. Mid-slide its own bounds
+ * are somewhere between the dock and the parking spot, so this is the only
+ * reliable record of where it belongs.
+ */
+let ribbonDockedX: number | null = null
 let lastCursorInsideMs = Date.now()
 let isDraggingPlacement = false
 const AUTOHIDE_GRACE_MS = 450
@@ -121,6 +151,9 @@ function startAutoHideLoop() {
     if (isFullscreenActive()) return
     if (shellPinned) return
     if (isDraggingPlacement) return
+    // Mid-slide the ribbon's bounds are in motion, so a cursor hit test against
+    // them means nothing. The slide's own completion decides what happens next.
+    if (isSliding()) return
     if (isContextMenuOpen()) return
     if (!ribbonWindow || ribbonWindow.isDestroyed()) return
     if (!ribbonWindow.isVisible()) return
@@ -139,30 +172,76 @@ function startAutoHideLoop() {
   }, 120)
 }
 
+/**
+ * Where the ribbon parks while hidden: one full width past its docked x, so it
+ * clears the screen edge whichever side it is docked to.
+ */
+function ribbonParkedX(dockedX: number, width: number, side: Side) {
+  return side === 'left' ? dockedX - width : dockedX + width
+}
+
+/** The pane and the player follow the ribbon in, once it has landed. */
+function finishReveal() {
+  if (paneWindow && !paneWindow.isDestroyed() && !isShellCollapsed()) paneWindow.show()
+  raisePlayerWindow()
+}
+
 function showShell() {
   shellHidden = false
   if (edgePeekWindow && !edgePeekWindow.isDestroyed()) edgePeekWindow.hide()
-  if (ribbonWindow && !ribbonWindow.isDestroyed()) {
-    ribbonWindow.show()
-  }
-  if (paneWindow && !paneWindow.isDestroyed()) {
-    if (!isShellCollapsed()) paneWindow.show()
-  }
   lastCursorInsideMs = Date.now()
   startAutoHideLoop()
-  raisePlayerWindow()
+
+  const ribbon = ribbonWindow
+  if (!ribbon || ribbon.isDestroyed()) {
+    finishReveal()
+    return
+  }
+
+  const bounds = ribbon.getBounds()
+  const dockedX = ribbonDockedX ?? bounds.x
+  ribbonDockedX = dockedX
+  // Fully hidden: park off-screen first so there is a distance to cover.
+  // Mid-retreat: the window is already somewhere out there, so just reverse.
+  if (!ribbon.isVisible()) {
+    ribbon.setBounds({ ...bounds, x: ribbonParkedX(dockedX, bounds.width, getCurrentSide()) })
+    ribbon.show()
+  }
+  slideTo(ribbon, dockedX, () => {
+    ribbonDockedX = null
+    finishReveal()
+  })
 }
 
 function hideShell() {
   shellHidden = true
   if (paneWindow && !paneWindow.isDestroyed()) paneWindow.hide()
-  if (ribbonWindow && !ribbonWindow.isDestroyed()) ribbonWindow.hide()
   hidePlayerNow()
+
+  // The trigger strip goes up before the slide, not after it: it has to be live
+  // while the ribbon is still retreating, or a cursor that comes straight back
+  // has nothing to hit and the sidebar stays gone.
   ensureEdgePeekWindow()
   if (edgePeekWindow && !edgePeekWindow.isDestroyed()) {
     updateEdgePeekBounds()
     edgePeekWindow.showInactive()
   }
+
+  const ribbon = ribbonWindow
+  if (!ribbon || ribbon.isDestroyed() || !ribbon.isVisible()) return
+
+  const bounds = ribbon.getBounds()
+  const dockedX = ribbonDockedX ?? bounds.x
+  ribbonDockedX = dockedX
+  slideTo(ribbon, ribbonParkedX(dockedX, bounds.width, getCurrentSide()), () => {
+    ribbonDockedX = null
+    if (ribbon.isDestroyed()) return
+    ribbon.hide()
+    // Re-dock while hidden, so it is invisible: everything else — placement,
+    // the cursor hit tests, the appbar strip — reads these bounds as the real
+    // ones, and a later reveal has a docked x to park relative to.
+    ribbon.setBounds({ ...bounds, x: dockedX })
+  })
 }
 
 function toggleShellVisibility() {
@@ -226,14 +305,56 @@ function resizePlayerWindowToContent(height: number) {
   raisePlayerWindow()
 }
 
+/**
+ * Reserves desktop space for the ribbon while pinned, like the taskbar does.
+ * Only the ribbon width is claimed, so expanding the pane never reflows other
+ * windows. Placement is re-run afterwards because reserving changes the work area.
+ */
+function syncEdgeReservation() {
+  if (process.platform !== 'win32') return
+  // Reserving reads the ribbon's bounds to pick a display, so land any slide
+  // first rather than claim a strip from a position it is only passing through.
+  settleSlide()
+  if (!shellPinned || !ribbonWindow || ribbonWindow.isDestroyed()) {
+    releaseEdge()
+  } else {
+    reserveEdge(ribbonWindow, getCurrentSide(), RIBBON_WIDTH)
+  }
+  syncLayoutRef?.()
+}
+
+/** Opens a URL that arrived from outside: the command line or a sidebar:// link. */
+function openLaunchUrl(url: string) {
+  if (isFullscreenActive()) exitFullscreen()
+  openUrlPreferPinned(url, false)
+  if (isShellCollapsed()) dispatchTabAction({ type:'toggleCollapsed' })
+  showShell()
+}
+
+/**
+ * Claims sidebar:// for this executable. The NSIS installer registers it too,
+ * but doing it at runtime also covers the portable build and `npm run dev:full`.
+ */
+function registerProtocolClient() {
+  if (app.isDefaultProtocolClient(LAUNCH_PROTOCOL)) return
+  if (app.isPackaged) {
+    app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL)
+    return
+  }
+  // In development the runtime is electron.exe, so the project path must ride
+  // along or a sidebar:// launch would just start a bare Electron.
+  app.setAsDefaultProtocolClient(LAUNCH_PROTOCOL, process.execPath, [path.resolve(process.argv[1] ?? '.')])
+}
+
 function refreshTrayMenu() {
-  tray?.setContextMenu(buildShellMenu())
+  tray?.setContextMenu(buildShellMenu({ includeShow: true }))
 }
 
 function toggleShellPinned() {
   shellPinned = !shellPinned
   saveShellPlacementState({ pinned: shellPinned })
   refreshTrayMenu()
+  syncEdgeReservation()
 
   if (shellPinned) {
     showShell()
@@ -244,22 +365,42 @@ function toggleShellPinned() {
   startAutoHideLoop()
 }
 
+/**
+ * Builds the tray image from the generated PNGs, one representation per DPI
+ * scale so Windows picks a crisp bitmap at 100%, 150% and 200%.
+ */
+function createTrayImage() {
+  const image = nativeImage.createEmpty()
+  for (const { scaleFactor, dataURL } of TRAY_ICON_PNGS) {
+    image.addRepresentation({ scaleFactor, dataURL })
+  }
+  // An empty image yields an invisible tray slot with no error at all, which is
+  // how a corrupt embedded icon previously went unnoticed. Make it loud.
+  if (image.isEmpty()) console.warn('[tray] icon image is empty; the tray icon will be invisible')
+  return image
+}
+
 function ensureTray() {
   if (tray) return
-  // Windows tray is most reliable with PNG/ICO (not SVG).
-  // Tiny built-in PNG icon (16x16).
-  const icon = nativeImage.createFromDataURL(
-    'data:image/png;base64,' +
-      'iVBORw0KGgoAAAANSUhEUgAAABAAAAAQCAYAAAAf8/9hAAAAm0lEQVQ4T+2SsQ2AMAwFf7QwQmQG0Qq0gSxgE9oB2oC6gK7wI3qZKQmVY2kVg0zq0wQYg7y2oYQJ9m1m9h1g9x2rQJQ3Jc0p9Gm0b5b5DgZKkq8p8a2oZ0cQm4o3r5Cqg3gQYwJgqv8r1w0o8gFvVwSgqY0m8QAAAABJRU5ErkJggg==',
-  )
-  tray = new Tray(icon)
+  tray = new Tray(createTrayImage())
   tray.setToolTip('Sidebar')
   refreshTrayMenu()
   tray.on('click', () => toggleShellVisibility())
 }
 
-function buildShellMenu() {
+function buildShellMenu(options: { includeShow?: boolean } = {}) {
   return Menu.buildFromTemplate([
+    ...(options.includeShow
+      ? ([
+          {
+            label: 'Show sidebar',
+            click: () => {
+              if (!isFullscreenActive()) showShell()
+            },
+          },
+          { type: 'separator' as const },
+        ] as const)
+      : []),
     {
       label: shellPinned ? 'Unpin' : 'Pin',
       click: () => toggleShellPinned(),
@@ -286,6 +427,29 @@ function buildShellMenu() {
       },
     },
   ])
+}
+
+/**
+ * Strips the chrome Windows adds to a frameless window: the shadow DWM draws
+ * even with hasShadow:false, the rounded corners Windows 11 gives every
+ * top-level window, and the show/hide transitions it animates. Each window here
+ * is meant to sit flush against the screen edge or against another window and
+ * animates its own motion, so none of the three belongs. No-op off Windows.
+ */
+function flattenWindowChrome(win: BrowserWindow) {
+  if (process.platform !== 'win32') return
+  // What actually squares the corners is `roundedCorners: false` at creation —
+  // Electron's own supported lever. This re-asserts it, and goes first, because
+  // disabling non-client rendering just below can reset DWM's corner clip.
+  const shadow = disableWindowShadow(win)
+  const transitions = disableWindowTransitions(win)
+  // The region is what actually squares the corners. Suppressing the shadow
+  // above leaves DWM rounding them whatever the corner preference says, and a
+  // region clips below that. It is fixed in the window's own pixels, so it has
+  // to be redone whenever the window resizes.
+  const region = squareWindowRegion(win)
+  win.on('resize', () => squareWindowRegion(win))
+  if (IS_DEV) console.log('[main] window chrome', { shadow, transitions, region })
 }
 
 function shellWebPreferences() {
@@ -414,6 +578,7 @@ function createShell() {
     x: persisted.side === 'right' ? workArea.x + workArea.width - RIBBON_WIDTH : workArea.x,
     y,
     frame: false,
+    roundedCorners: false,
     resizable: false,
     // Reposition only via renderer grip → `window:commitPlacement` on pointer release.
     movable: false,
@@ -431,6 +596,7 @@ function createShell() {
     x: workArea.x,
     y,
     frame: false,
+    roundedCorners: false,
     resizable: false,
     movable: false,
     hasShadow: false,
@@ -440,6 +606,9 @@ function createShell() {
     backgroundColor: '#1a1a2e',
     webPreferences: shellWebPreferences(),
   })
+
+  flattenWindowChrome(ribbonWin)
+  flattenWindowChrome(paneWin)
 
   const tabManager = new TabManager(paneWin)
   tabManager.setBeforeInputHandler(handleShortcutInput)
@@ -484,10 +653,22 @@ function createShell() {
 
   wireCloseTogether(ribbonWin, paneWin)
 
+  if (process.platform === 'win32') {
+    // Windows posts appbar notifications (taskbar moved, another appbar
+    // appeared) to this app-defined message; re-assert our strip when it does.
+    ribbonWin.hookWindowMessage(APPBAR_CALLBACK_MESSAGE, wParam => {
+      const notification = wParam.length >= 4 ? wParam.readUInt32LE(0) : Number(wParam[0] ?? 0)
+      if (handleAppBarCallback(notification, ribbonWin, getCurrentSide(), RIBBON_WIDTH)) {
+        syncLayoutRef?.()
+      }
+    })
+  }
+
   const onMetrics = () => syncLayout()
   screen.on('display-metrics-changed', onMetrics)
 
   ribbonWin.on('closed', () => {
+    releaseEdge()
     screen.removeListener('display-metrics-changed', onMetrics)
     if (ribbonWindow === ribbonWin) ribbonWindow = null
   })
@@ -504,6 +685,7 @@ function ensureEdgePeekWindow() {
     width: 2,
     height: 200,
     frame: false,
+    roundedCorners: false,
     resizable: false,
     movable: false,
     focusable: false,
@@ -514,6 +696,7 @@ function ensureEdgePeekWindow() {
     backgroundColor: '#00000000',
     webPreferences: shellWebPreferences(),
   })
+  flattenWindowChrome(win)
   loadRenderer(win, 'edge')
   win.on('closed', () => {
     if (edgePeekWindow === win) edgePeekWindow = null
@@ -538,6 +721,10 @@ function updateEdgePeekBounds() {
 function enterFullscreen(tabId: number, fromHtml: boolean) {
   if (isFullscreenActive()) return
   if (!paneWindow || paneWindow.isDestroyed() || !tabsRef) return
+
+  // Fullscreen hides the ribbon outright, so land any slide first rather than
+  // leave a timer moving the window underneath it.
+  settleSlide()
 
   // A background tab (e.g. audio playing elsewhere) must come forward first.
   if (tabsRef.getActiveTabId() !== tabId) dispatchTabAction({ type: 'activate', id: tabId })
@@ -652,6 +839,7 @@ function ensurePlayerWindow() {
     width: PLAYER_WINDOW_WIDTH,
     height: PLAYER_WINDOW_HEIGHT,
     frame: false,
+    roundedCorners: false,
     resizable: false,
     movable: true,
     hasShadow: false,
@@ -662,6 +850,7 @@ function ensurePlayerWindow() {
     webPreferences: shellWebPreferences(),
   })
   win.setAlwaysOnTop(true, PLAYER_TOP_LEVEL)
+  flattenWindowChrome(win)
   loadRenderer(win, 'player')
   win.on('closed', () => {
     if (playerWindow === win) playerWindow = null
@@ -672,6 +861,7 @@ function ensurePlayerWindow() {
 
 app.whenReady().then(() => {
   console.log('[main] app ready')
+  if (!isPrimaryInstance) return
   ensureTray()
   ipcMain.on('shell:contextMenu', (e, clientX: number, clientY: number) => {
     const x = Math.round(Number(clientX))
@@ -690,7 +880,6 @@ app.whenReady().then(() => {
     if (isFullscreenActive()) return
     showShell()
   })
-  ipcMain.on('shell:toggleFullscreen', () => toggleFullscreenFromShortcut())
   ipcMain.on('downloads:togglePanel', (_e, screenX: number, screenY: number) => {
     const x = Number(screenX)
     const y = Number(screenY)
@@ -784,10 +973,20 @@ app.whenReady().then(() => {
   app.on('before-quit', () => {
     isQuitting = true
     flushPinnedSitesSave()
+    // An appbar left registered keeps the work area shrunk after we exit.
+    releaseEdge()
   })
   const { ribbonWin, paneWin } = createShell()
   ribbonWindow = ribbonWin
   paneWindow = paneWin
+
+  syncEdgeReservation()
+  registerProtocolClient()
+
+  // A URL on the command line means "open this", including on a cold start:
+  // Windows delivers sidebar:// links as a trailing argument.
+  const startupUrl = urlFromArgv(process.argv)
+  if (startupUrl) openLaunchUrl(startupUrl)
 
   // Keep the auto-hide loop running for the lifetime of the app so collapse-mode
   // always re-enables hiding correctly, even after window show/hide cycles.
