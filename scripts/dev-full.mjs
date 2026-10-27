@@ -33,8 +33,11 @@ vite.on('exit', code => {
 try {
   await waitForServer(VITE_URL)
 
+  // Handing the URL over is also what tells the main process this is a dev run;
+  // it has no other way to tell itself apart from `npm start`.
   electron = spawn(electronPath, ['.'], {
     stdio: 'inherit',
+    env: { ...process.env, SIDEBAR_DEV_SERVER_URL: VITE_URL },
   })
 
   console.log(`[dev] Electron started with pid ${electron.pid}`)

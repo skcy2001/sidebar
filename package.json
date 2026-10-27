@@ -10,7 +10,7 @@
     "build": "npm run clean && tsc -p tsconfig.node.json && vite build && tsc -p tsconfig.electron.json",
     "start": "node scripts/run-electron.mjs .",
     "preview": "vite preview",
-    "dev:electron": "tsc -p tsconfig.electron.json && node scripts/run-electron.mjs .",
+    "dev:electron": "tsc -p tsconfig.electron.json && node scripts/run-electron.mjs . --dev-server http://127.0.0.1:5173",
     "dev:full": "tsc -p tsconfig.electron.json && node scripts/dev-full.mjs",
     "icon": "node scripts/generate-icon.mjs",
     "dist": "npm run build && electron-builder --win --arm64",

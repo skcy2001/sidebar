@@ -32,7 +32,15 @@ import {
   squareWindowRegion,
 } from './appbar'
 
-const IS_DEV = process.env.NODE_ENV === 'development' || !app.isPackaged
+/**
+ * The Vite server to load the renderer from, handed over by the dev launcher.
+ *
+ * Its presence is what marks a run as development. `app.isPackaged` cannot do
+ * that job — it is false for `npm start` as well, so that path went looking for
+ * a dev server nobody had started and came up with blank windows.
+ */
+const DEV_SERVER_URL = process.env.SIDEBAR_DEV_SERVER_URL?.replace(/\/+$/, '') || null
+const IS_DEV = DEV_SERVER_URL !== null
 
 // Only one sidebar may run: a second copy would fight over the screen edge,
 // the tray, and the shared state files. Later launches hand their URL over.
@@ -463,18 +471,10 @@ function shellWebPreferences() {
 }
 
 function loadRenderer(win: BrowserWindow, role: 'ribbon' | 'pane' | 'player' | 'edge' | 'downloads') {
-  if (IS_DEV) {
-    const q =
-      role === 'ribbon'
-        ? '?role=ribbon'
-        : role === 'player'
-        ? '?role=player'
-        : role === 'edge'
-        ? '?role=edge'
-        : role === 'downloads'
-        ? '?role=downloads'
-        : '?role=pane'
-    win.loadURL(`http://127.0.0.1:5173/${q}`).catch(error => console.error('[main] failed to load dev URL', error))
+  if (DEV_SERVER_URL) {
+    win.loadURL(`${DEV_SERVER_URL}/?role=${role}`).catch(error =>
+      console.error('[main] failed to load dev URL', error),
+    )
   } else {
     win.loadFile(path.join(__dirname, '../../dist/index.html'), { query: { role } }).catch(error =>
       console.error('[main] failed to load file', error),
